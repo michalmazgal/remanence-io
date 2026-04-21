@@ -36,15 +36,15 @@ def run_command(cmd):
 
 def get_template_for_gpu(gpu_name):
     gpu_map = {
-        'RTX_A6000': '391015',
-        'A100': '391016',
-        'H100': '391017',
-        'RTX_3090': '391015', # Fallback
-        'RTX_4090': '391015'  # Fallback
+        'RTX_A6000': '09c5ce82d23714ab0b2870c059f96770',
+        'A100': 'fe704f86fbf14d6cabb5bb11da799071',
+        'H100': '202ef9f8ee17ebbe893ed8aa36ebcdd6',
+        'RTX_3090': '09c5ce82d23714ab0b2870c059f96770', # Fallback
+        'RTX_4090': '09c5ce82d23714ab0b2870c059f96770'  # Fallback
     }
-    for key, tid in gpu_map.items():
+    for key, thash in gpu_map.items():
         if key in gpu_name:
-            return tid
+            return thash
     return None
 
 def orchestrate_video(video_name):
@@ -96,12 +96,12 @@ def orchestrate_video(video_name):
         print("No GPUs available with a corresponding Docker image")
         return False
     
-    # 2. Rent the instance using the template
+    # 2. Rent the instance using the template hash
     create_cmd = [
         'vastai', 'create', 'instance', 
-        selected_template, 
-        f'offer={selected_offer}', 
-        f'env=R2_ACCESS_KEY={R2_ACCESS_KEY},R2_SECRET_KEY={R2_SECRET_KEY},R2_BUCKET={R2_BUCKET},R2_ENDPOINT={R2_ENDPOINT},VIDEO_NAME={video_name}'
+        selected_offer, 
+        f'--template_hash={selected_template}', 
+        f'--env', f'R2_ACCESS_KEY={R2_ACCESS_KEY},R2_SECRET_KEY={R2_SECRET_KEY},R2_BUCKET={R2_BUCKET},R2_ENDPOINT={R2_ENDPOINT},VIDEO_NAME={video_name}'
     ]
     create_res = run_command(create_cmd)
     if create_res.returncode != 0:
