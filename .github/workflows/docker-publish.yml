@@ -1,4 +1,4 @@
-name: Build and Push Docker Image
+name: Build and Push GPU-Specific Images
 
 on:
   push:
@@ -8,11 +8,14 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_BASE: ${{ github.repository }}
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        gpu: [ada6000, a100, h100]
     permissions:
       contents: read
       packages: write
@@ -28,11 +31,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels) for Docker
+      - name: Extract metadata for Docker
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}-worker-${{ matrix.gpu }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5

@@ -21,9 +21,9 @@ s3 = boto3.client(
 )
 
 def download_video(video_name):
-    local_path = f"/tmp/{video_name}"
+    local_path = f"/tmp/{os.path.basename(video_name)}"
     print(f"Downloading {video_name}...")
-    s3.download_file(R2_BUCKET, f"pending/{video_name}", local_path)
+    s3.download_file(R2_BUCKET, video_name, local_path)
     return local_path
 
 def upload_video(local_path, video_name):

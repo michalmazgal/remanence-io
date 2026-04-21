@@ -8,7 +8,10 @@ import sys
 R2_ACCESS_KEY = os.getenv('R2_ACCESS_KEY')
 R2_SECRET_KEY = os.getenv('R2_SECRET_KEY')
 R2_BUCKET = os.getenv('R2_BUCKET')
-R2_ENDPOINT = os.getenv('R2_ENDPOINT', 'https://your-endpoint.r2.cloudflarestorage.com')
+R2_ENDPOINT = os.getenv('R2_ENDPOINT', 'https://your-endpoint.r2.cloudflarestorage.com').split('/heatsun-data')[0] if '/heatsun-data' in os.getenv('R2_ENDPOINT', '') else os.getenv('R2_ENDPOINT', 'https://your-endpoint.r2.cloudflarestorage.com')
+# Actually, simpler: just take the part before the first slash after the domain.
+# Let's just use a clean way to handle it.
+
 DOCKER_IMAGE = f"ghcr.io/{os.getenv('GH_USER')}/remanence-worker:latest"
 
 s3 = boto3.client(
@@ -19,10 +22,10 @@ s3 = boto3.client(
 )
 
 def list_pending_videos():
-    response = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix='pending/')
+    response = s3.list_objects_v2(Bucket=R2_BUCKET)
     if 'Contents' not in response:
         return []
-    return [obj['Key'].replace('pending/', '') for obj in response['Contents'] if obj['Key'] != 'pending/']
+    return [obj['Key'] for obj in response['Contents'] if obj['Key'].endswith('.mp4') and not obj['Key'].startswith('processed/')]
 
 def run_command(cmd):
     print(f"Running: {' '.join(cmd)}")
@@ -31,34 +34,64 @@ def run_command(cmd):
         print(f"Error: {result.stderr}")
     return result
 
+def get_image_for_gpu(gpu_name):
+    gpu_map = {
+        'RTX_A6000': 'ada6000',
+        'A100': 'a100',
+        'H100': 'h100'
+    }
+    # Find a match in the map
+    for key, tag in gpu_map.items():
+        if key in gpu_name:
+            return f"ghcr.io/{os.getenv('GH_USER')}/remanence-worker-{tag}:latest"
+    return None
+
 def orchestrate_video(video_name):
     print(f"Starting orchestration for {video_name}")
     
-    # 1. Find an ADA6000 GPU
-    # Search for ADA6000, sort by price
+    # 1. Find an ECC GPU (A6000, A100, H100)
+    # Search for compatible GPUs, sort by price
     search_cmd = [
         'vastai', 'search', 'offers', 
-        'gpu_name=RTX_A6000', 
+        'gpu_name=RTX_A6000,A100,H100', 
         'sort_by=price', 
-        'limit=1'
+        'limit=5'
     ]
     search_res = run_command(search_cmd)
     if search_res.returncode != 0 or not search_res.stdout:
-        print("No ADA6000 GPUs available")
+        print("No compatible ECC GPUs available")
         return False
     
-    # Extract offer ID
     lines = search_res.stdout.strip().split('\n')
     if len(lines) < 2:
-        print("Could not find offer ID")
+        print("Could not find offers")
         return False
-    offer_id = lines[1].split()[0]
+
+    # Try to find a GPU that has a matching image
+    selected_offer = None
+    selected_image = None
+    
+    for line in lines[1:]:
+        parts = line.split()
+        if not parts: continue
+        offer_id = parts[0]
+        gpu_name = parts[2] if len(parts) > 2 else ""
+        
+        image = get_image_for_gpu(gpu_name)
+        if image:
+            selected_offer = offer_id
+            selected_image = image
+            break
+            
+    if not selected_offer:
+        print("No GPUs available with a corresponding Docker image")
+        return False
     
     # 2. Rent the instance
     create_cmd = [
         'vastai', 'create', 'instance', 
-        f'offer={offer_id}', 
-        f'image={DOCKER_IMAGE}',
+        f'offer={selected_offer}', 
+        f'image={selected_image}',
         f'env=R2_ACCESS_KEY={R2_ACCESS_KEY},R2_SECRET_KEY={R2_SECRET_KEY},R2_BUCKET={R2_BUCKET},R2_ENDPOINT={R2_ENDPOINT},VIDEO_NAME={video_name}'
     ]
     create_res = run_command(create_cmd)
@@ -66,35 +99,17 @@ def orchestrate_video(video_name):
         print("Failed to create instance")
         return False
     
-    # Extract instance ID
-    # vastai create instance output is usually something like "Instance 123456 created"
     instance_id = create_res.stdout.strip().split()[1]
     
     try:
-        # 3. Monitor completion
-        # We can monitor the instance status or check logs.
-        # For simplicity, we'll poll the instance state.
-        # When the worker finishes, it can simply exit, but the instance remains.
-        # A better way is to check the logs for "Processing completed successfully".
-        
         while True:
-            log_cmd = ['vastai', 'show', 'instances', instance_id, '-y'] # -y for yaml or just get output
-            log_res = run_command(log_cmd)
-            
-            # In a real scenario, we would use 'vastai log' to check the worker's output
-            # Or we could have the worker update a status file in R2.
-            # Let's check if the video now exists in the 'processed/' folder.
-            
             response = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix=f'processed/{video_name}')
             if 'Contents' in response:
                 print(f"Video {video_name} processed and uploaded")
                 break
-            
             print("Still processing...")
             time.sleep(60)
-            
     finally:
-        # 4. Destroy the instance
         destroy_cmd = ['vastai', 'destroy', 'instance', instance_id]
         run_command(destroy_cmd)
     
