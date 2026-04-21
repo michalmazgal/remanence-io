@@ -3,16 +3,35 @@ import subprocess
 import boto3
 import time
 import sys
+import json
+import signal
 
 # Configuration
-R2_ACCESS_KEY = os.getenv('R2_ACCESS_KEY')
-R2_SECRET_KEY = os.getenv('R2_SECRET_KEY')
-R2_BUCKET = os.getenv('R2_BUCKET')
-R2_ENDPOINT = os.getenv('R2_ENDPOINT', 'https://your-endpoint.r2.cloudflarestorage.com').split('/heatsun-data')[0] if '/heatsun-data' in os.getenv('R2_ENDPOINT', '') else os.getenv('R2_ENDPOINT', 'https://your-endpoint.r2.cloudflarestorage.com')
-# Actually, simpler: just take the part before the first slash after the domain.
-# Let's just use a clean way to handle it.
+DEFAULT_TEMPLATE_HASH = 'eb2ab4cbd19599ce6d0af2df73423dc9'
 
-DOCKER_IMAGE = f"ghcr.io/{os.getenv('GH_USER')}/remanence-worker:latest"
+def load_secrets():
+    secrets = {}
+    try:
+        with open('/root/.heatsun_secrets', 'r') as f:
+            for line in f:
+                if '=' in line:
+                    k, v = line.strip().split('=', 1)
+                    secrets[k] = v
+    except FileNotFoundError:
+        pass
+    return secrets
+
+secrets = load_secrets()
+R2_ACCESS_KEY = os.getenv('R2_ACCESS_KEY') or secrets.get('R2_ACCESS_KEY')
+R2_SECRET_KEY = os.getenv('R2_SECRET_KEY') or secrets.get('R2_SECRET_KEY')
+R2_BUCKET = os.getenv('R2_BUCKET') or secrets.get('R2_BUCKET')
+R2_ENDPOINT = os.getenv('R2_ENDPOINT') or secrets.get('R2_ENDPOINT', 'https://your-endpoint.r2.cloudflarestorage.com')
+
+if R2_ENDPOINT and '/heatsun-data' in R2_ENDPOINT:
+    R2_ENDPOINT = R2_ENDPOINT.split('/heatsun-data')[0]
+
+GH_USER = os.getenv('GH_USER') or secrets.get('GH_USER')
+DOCKER_IMAGE = f"ghcr.io/{GH_USER}/remanence-worker:latest" if GH_USER else "ghcr.io/default/remanence-worker:latest"
 
 s3 = boto3.client(
     's3',
@@ -36,11 +55,11 @@ def run_command(cmd):
 
 def get_template_for_gpu(gpu_name):
     gpu_map = {
-        'RTX_A6000': '09c5ce82d23714ab0b2870c059f96770',
-        'A100': 'fe704f86fbf14d6cabb5bb11da799071',
-        'H100': '202ef9f8ee17ebbe893ed8aa36ebcdd6',
-        'RTX_3090': '09c5ce82d23714ab0b2870c059f96770', # Fallback
-        'RTX_4090': '09c5ce82d23714ab0b2870c059f96770'  # Fallback
+        'RTX_A6000': 'eb2ab4cbd19599ce6d0af2df73423dc9',
+        'A100': 'eb2ab4cbd19599ce6d0af2df73423dc9',
+        'H100': 'a74d9e369719273bca0ae861093e4d0c',
+        'RTX_3090': 'eb2ab4cbd19599ce6d0af2df73423dc9', # Fallback
+        'RTX_4090': 'eb2ab4cbd19599ce6d0af2df73423dc9'  # Fallback
     }
     for key, thash in gpu_map.items():
         if key in gpu_name:
@@ -48,85 +67,148 @@ def get_template_for_gpu(gpu_name):
     return None
 
 def orchestrate_video(video_name):
+    global current_instance_id
     print(f"Starting orchestration for {video_name}")
-    
-    # 1. Find a high-end GPU (Expanding for immediate test)
-    # Removed sort_by and limit as they are not supported by this CLI version
-    search_cmd = [
-        'vastai', 'search', 'offers', 
-        'gpu_name=RTX_A6000,A100,H100,RTX_3090,RTX_4090'
-    ]
-    search_res = run_command(search_cmd)
-    if search_res.returncode != 0 or not search_res.stdout:
-        print("No suitable GPUs available")
-        return False
-    
-    lines = search_res.stdout.strip().split('\n')
-    if len(lines) < 2:
-        print("Could not find offers")
-        return False
+    instance_id = None
 
-    # We'll handle sorting by price in Python
-    offers = []
-    for line in lines[1:]:
-        parts = line.split()
-        if not parts: continue
-        try:
-            offer_id = parts[0]
-            gpu_name = parts[4] if len(parts) > 4 else "" # Adjusted index for the actual CLI output
-            price = float(parts[9]) if len(parts) > 9 else float('inf')
-            offers.append((price, offer_id, gpu_name))
-        except (ValueError, IndexError):
-            continue
-    
-    offers.sort() # Sort by price ascending
-            
-    # Try to find a GPU that has a matching template from the sorted list
-    selected_offer = None
-    selected_template = None
-    
-    for price, offer_id, gpu_name in offers:
-        tid = get_template_for_gpu(gpu_name)
-        if tid:
-            selected_offer = offer_id
-            selected_template = tid
-            break
-            
-    if not selected_offer:
-        print("No GPUs available with a corresponding Docker image")
-        return False
-    
-    # 2. Rent the instance using the template hash
-    create_cmd = [
-        'vastai', 'create', 'instance', 
-        selected_offer, 
-        f'--template_hash={selected_template}', 
-        f'--env', f'R2_ACCESS_KEY={R2_ACCESS_KEY},R2_SECRET_KEY={R2_SECRET_KEY},R2_BUCKET={R2_BUCKET},R2_ENDPOINT={R2_ENDPOINT},VIDEO_NAME={video_name}'
-    ]
-    create_res = run_command(create_cmd)
-    if create_res.returncode != 0:
-        print("Failed to create instance")
-        return False
-    
-    instance_id = create_res.stdout.strip().split()[1]
     
     try:
+        # 1. Find a high-end GPU
+        print("Searching for available GPU offers...")
+        search_cmd = [
+            'vastai', 'search', 'offers', 
+            'gpu_name=RTX_A6000,A100,H100,RTX_3090,RTX_4090',
+            '--raw'
+        ]
+        search_res = run_command(search_cmd)
+        
+        # Fallback: if no high-end GPUs, search for ANY available GPU to ensure service availability
+        if search_res.returncode != 0 or not search_res.stdout or search_res.stdout.strip() == '[]':
+            print("No high-end GPUs available, searching for any available GPU...")
+            search_cmd = ['vastai', 'search', 'offers', '--raw']
+            search_res = run_command(search_cmd)
+
+        if search_res.returncode != 0 or not search_res.stdout:
+            print("No GPUs available in search results")
+            return False
+        
+        try:
+            offers_data = json.loads(search_res.stdout)
+            offers = []
+            for offer in offers_data:
+                try:
+                    offer_id = offer['id']
+                    gpu_name = offer.get('gpu_name', '')
+                    price = float(offer.get('price', float('inf')))
+                    offers.append((price, offer_id, gpu_name))
+                except (KeyError, ValueError):
+                    continue
+        except json.JSONDecodeError:
+            print("Failed to parse search results as JSON")
+            return False
+        
+        if not offers:
+            print("No valid offers parsed from search output")
+            return False
+
+        offers.sort() # Sort by price ascending
+        price, selected_offer, gpu_name = offers[0]
+        selected_offer = str(selected_offer)
+        print(f"Selected cheapest offer: {selected_offer} ({gpu_name}) at ${price}/hr")
+                
+        # 2. Determine template or image
+        template_hash = get_template_for_gpu(gpu_name)
+        if template_hash:
+            print(f"Using template hash: {template_hash}")
+            creation_arg = f'--template_hash={template_hash}'
+        else:
+            print(f"No specific template found for {gpu_name}, using default authenticated template: {DEFAULT_TEMPLATE_HASH}")
+            creation_arg = f'--template_hash={DEFAULT_TEMPLATE_HASH}'
+        
+        # 3. Rent the instance
+        print(f"Creating instance on offer {selected_offer}...")
+        if '=' in creation_arg:
+            create_cmd = [
+                'vastai', 'create', 'instance', 
+                selected_offer, 
+                creation_arg, 
+                '--env', f'R2_ACCESS_KEY={R2_ACCESS_KEY},R2_SECRET_KEY={R2_SECRET_KEY},R2_BUCKET={R2_BUCKET},R2_ENDPOINT={R2_ENDPOINT},VIDEO_NAME={video_name}',
+                '--raw'
+            ]
+        else:
+            # Handle --image DOCKER_IMAGE as two separate args
+            arg_parts = creation_arg.split()
+            create_cmd = [
+                'vastai', 'create', 'instance', 
+                selected_offer, 
+                *arg_parts,
+                '--env', f'R2_ACCESS_KEY={R2_ACCESS_KEY},R2_SECRET_KEY={R2_SECRET_KEY},R2_BUCKET={R2_BUCKET},R2_ENDPOINT={R2_ENDPOINT},VIDEO_NAME={video_name}',
+                '--raw'
+            ]
+            
+        create_res = run_command(create_cmd)
+        if create_res.returncode != 0:
+            print(f"Failed to create instance: {create_res.stderr}")
+            return False
+        
+        try:
+            create_data = json.loads(create_res.stdout)
+            instance_id = create_data.get('id') or create_data.get('new_contract')
+            current_instance_id = instance_id
+            if not instance_id:
+                raise ValueError("No instance ID found in JSON response")
+            print(f"Instance created successfully: {instance_id}")
+
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"Could not parse instance ID from output: {create_res.stdout}. Error: {e}")
+            return False
+        
+        # 4. Wait for report
+        print(f"Waiting for benchmark report for {video_name}...")
+        timeout = 2 * 60 * 60 # 2 hours
+        start_time = time.time()
         while True:
+            if time.time() - start_time > timeout:
+                print(f"Timeout reached waiting for report for {video_name}. Aborting.")
+                return False
             response = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix=f'reports/{video_name}.txt')
             if 'Contents' in response:
                 print(f"Benchmark report for {video_name} is ready")
                 break
             print("Still processing benchmark...")
             time.sleep(60)
+            
+    except Exception as e:
+        print(f"An error occurred during orchestration: {e}")
+        return False
     finally:
-        destroy_cmd = ['vastai', 'destroy', 'instance', instance_id]
-        run_command(destroy_cmd)
+        if instance_id:
+            instance_id_str = str(instance_id)
+            print(f"Destroying instance {instance_id_str}...")
+            destroy_cmd = ['vastai', 'destroy', 'instance', instance_id_str]
+            run_command(destroy_cmd)
     
     return True
 
 def main():
+    # Global instance tracking for signal handling
+    global current_instance_id
+    current_instance_id = None
+
+    def signal_handler(sig, frame):
+        print(f"\nReceived signal {sig}. Cleaning up...")
+        if current_instance_id:
+            instance_id_str = str(current_instance_id)
+            print(f"Destroying emergency instance {instance_id_str}...")
+            subprocess.run(['vastai', 'destroy', 'instance', instance_id_str])
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     while True:
         videos = list_pending_videos()
+
         if not videos:
             print("No pending videos to process. Waiting 5 minutes...")
             time.sleep(300)

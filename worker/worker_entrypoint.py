@@ -5,6 +5,15 @@ import cv2
 import numpy as np
 import sys
 from grain_processor import GrainProcessor
+from benchmark import run_benchmark
+
+# Configuration from environment variables
+R2_ACCESS_KEY = os.getenv('R2_ACCESS_KEY')
+R2_SECRET_KEY = os.getenv('R2_SECRET_KEY')
+R2_BUCKET = os.getenv('R2_BUCKET')
+R2_ENDPOINT = os.getenv('R2_ENDPOINT', 'https://your-endpoint.r2.cloudflarestorage.com')
+VIDEO_NAME = os.getenv('VIDEO_NAME')
+RUN_BENCHMARK = os.getenv('RUN_BENCHMARK', 'false').lower() == 'true'
 
 # Configuration from environment variables
 R2_ACCESS_KEY = os.getenv('R2_ACCESS_KEY')
@@ -110,6 +119,23 @@ def main():
         sys.exit(1)
         
     try:
+        if RUN_BENCHMARK:
+            print(f"Running full benchmark for {VIDEO_NAME}...")
+            # Download video to local path for benchmark.py
+            local_path = f"/tmp/{os.path.basename(VIDEO_NAME)}"
+            s3 = boto3.client(
+                's3',
+                aws_access_key_id=R2_ACCESS_KEY,
+                aws_secret_access_key=R2_SECRET_KEY,
+                endpoint_url=R2_ENDPOINT
+            )
+            s3.download_file(R2_BUCKET, VIDEO_NAME, local_path)
+            
+            # Run the professional benchmark
+            run_benchmark(local_path)
+            print("Benchmark completed successfully")
+            return
+
         video_path = download_video(VIDEO_NAME)
         
         # 1. Optimized Pipeline
@@ -143,6 +169,7 @@ def main():
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
