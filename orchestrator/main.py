@@ -34,17 +34,17 @@ def run_command(cmd):
         print(f"Error: {result.stderr}")
     return result
 
-def get_image_for_gpu(gpu_name):
+def get_template_for_gpu(gpu_name):
     gpu_map = {
-        'RTX_A6000': 'ada6000',
-        'A100': 'a100',
-        'H100': 'h100',
-        'RTX_3090': 'ada6000', # Fallback for testing
-        'RTX_4090': 'ada6000'  # Fallback for testing
+        'RTX_A6000': '391015',
+        'A100': '391016',
+        'H100': '391017',
+        'RTX_3090': '391015', # Fallback
+        'RTX_4090': '391015'  # Fallback
     }
-    for key, tag in gpu_map.items():
+    for key, tid in gpu_map.items():
         if key in gpu_name:
-            return f"ghcr.io/{os.getenv('GH_USER')}/remanence-worker-{tag}:latest"
+            return tid
     return None
 
 def orchestrate_video(video_name):
@@ -81,26 +81,26 @@ def orchestrate_video(video_name):
     
     offers.sort() # Sort by price ascending
             
-    # Try to find a GPU that has a matching image from the sorted list
+    # Try to find a GPU that has a matching template from the sorted list
     selected_offer = None
-    selected_image = None
+    selected_template = None
     
     for price, offer_id, gpu_name in offers:
-        image = get_image_for_gpu(gpu_name)
-        if image:
+        tid = get_template_for_gpu(gpu_name)
+        if tid:
             selected_offer = offer_id
-            selected_image = image
+            selected_template = tid
             break
             
     if not selected_offer:
         print("No GPUs available with a corresponding Docker image")
         return False
     
-    # 2. Rent the instance
+    # 2. Rent the instance using the template
     create_cmd = [
         'vastai', 'create', 'instance', 
+        selected_template, 
         f'offer={selected_offer}', 
-        f'image={selected_image}',
         f'env=R2_ACCESS_KEY={R2_ACCESS_KEY},R2_SECRET_KEY={R2_SECRET_KEY},R2_BUCKET={R2_BUCKET},R2_ENDPOINT={R2_ENDPOINT},VIDEO_NAME={video_name}'
     ]
     create_res = run_command(create_cmd)
