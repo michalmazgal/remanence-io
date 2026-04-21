@@ -116,15 +116,22 @@ def orchestrate_video(video_name):
     return True
 
 def main():
-    videos = list_pending_videos()
-    if not videos:
-        print("No pending videos to process")
-        return
-    
-    for video in videos:
-        success = orchestrate_video(video)
-        if not success:
-            print(f"Failed to process {video}")
+    while True:
+        videos = list_pending_videos()
+        if not videos:
+            print("No pending videos to process. Waiting 5 minutes...")
+            time.sleep(300)
+            continue
+        
+        for video in videos:
+            success = orchestrate_video(video)
+            if success:
+                print(f"Successfully processed {video}")
+            else:
+                print(f"Failed to process {video}, will retry in the next cycle")
+        
+        print("Cycle complete. Sleeping 60 seconds before next check...")
+        time.sleep(60)
 
 if __name__ == "__main__":
     main()
