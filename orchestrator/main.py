@@ -103,11 +103,13 @@ def orchestrate_video(video_name):
     
     try:
         while True:
-            response = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix=f'processed/{video_name}')
+            # Check if the report exists in R2
+            response = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix=f'reports/{video_name}.txt')
             if 'Contents' in response:
-                print(f"Video {video_name} processed and uploaded")
+                print(f"Benchmark report for {video_name} is ready")
                 break
-            print("Still processing...")
+            
+            print("Still processing benchmark...")
             time.sleep(60)
     finally:
         destroy_cmd = ['vastai', 'destroy', 'instance', instance_id]

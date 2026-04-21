@@ -48,42 +48,39 @@ def find_best_seed(video_path):
     print(f"Best seed found: {best_seed}")
     return best_seed
 
-def process_and_encode(video_path, seed):
-    output_path = f"/tmp/processed_{os.path.basename(video_path)}"
+import time
+
+def standard_encode(video_path):
+    output_path = f"/tmp/standard_{os.path.basename(video_path)}"
+    start_time = time.time()
     
-    # We use ffmpeg to pipe frames to python for grain subtraction, 
-    # then pipe back to ffmpeg for SVT-AV1 encoding.
-    # This is a simplified version. In a real scenario, we'd use a more robust pipe.
-    
-    # Grain subtraction via a separate script or integrated in this one.
-    # For simplicity, let's implement a frame-by-frame processor.
-    
-    # We will run a subprocess that reads raw frames from ffmpeg,
-    # processes them with GrainProcessor, and writes them back to ffmpeg.
-    
-    # Command to extract raw frames
-    extract_cmd = [
-        'ffmpeg', '-i', video_path, '-f', 'rawvideo', '-pix_fmt', 'gray', 'pipe:1'
-    ]
-    
-    # Command to encode raw frames to AV1
-    # We'll use SVT-AV1 through ffmpeg. 
-    # grain_synthesis=1 enables grain synthesis in SVT-AV1.
     encode_cmd = [
-        'ffmpeg', '-f', 'rawvideo', '-pix_fmt', 'gray', '-s', '1920x1080', '-i', 'pipe:0',
+        'ffmpeg', '-y', '-i', video_path, 
         '-c:v', 'libsvtav1', '-preset', '8', '-crf', '30', 
-        '-svtav1-params', f'grain-synthesis=1:grain-seed={seed}',
         output_path
     ]
     
-    # Since we need to process each frame with GrainProcessor, we can't just pipe ffmpeg to ffmpeg.
-    # We'll use a python loop to read from one process and write to another.
+    subprocess.run(encode_cmd, check=True, capture_output=True)
+    end_time = time.time()
     
-    # First, get video dimensions
+    return output_path, end_time - start_time
+
+def process_and_encode(video_path, seed):
+    output_path = f"/tmp/optimized_{os.path.basename(video_path)}"
+    start_time = time.time()
+    
     probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', 
                            '-show_entries', 'stream=width,height', '-of', 'csv=p=0', video_path], 
                           capture_output=True, text=True)
     width, height = map(int, probe.stdout.strip().split(','))
+    
+    extract_cmd = ['ffmpeg', '-i', video_path, '-f', 'rawvideo', '-pix_fmt', 'gray', 'pipe:1']
+    encode_cmd = [
+        'ffmpeg', '-y', '-f', 'rawvideo', '-pix_fmt', 'gray', '-s', f'{width}x{height}', '-i', 'pipe:0',
+        '-c:v', 'libsvtav1', '-preset', '8', '-crf', '30', 
+        '-svtav1-params', f'grain-synthesis=1:grain-seed={seed}',
+        output_path
+    ]
     
     p_extract = subprocess.Popen(extract_cmd, stdout=subprocess.PIPE, bufsize=10**8)
     p_encode = subprocess.Popen(encode_cmd, stdin=subprocess.PIPE, bufsize=10**8)
@@ -94,20 +91,18 @@ def process_and_encode(video_path, seed):
     try:
         while True:
             raw_frame = p_extract.stdout.read(frame_size)
-            if not raw_frame:
-                break
-            
+            if not raw_frame: break
             frame = np.frombuffer(raw_frame, dtype=np.uint8).reshape((height, width))
             processed_frame = processor.process_frame(frame, seed)
             p_encode.stdin.write(processed_frame.tobytes())
-            
     finally:
         p_extract.stdout.close()
         p_encode.stdin.close()
         p_extract.wait()
         p_encode.wait()
         
-    return output_path
+    end_time = time.time()
+    return output_path, end_time - start_time
 
 def main():
     if not VIDEO_NAME:
@@ -116,10 +111,35 @@ def main():
         
     try:
         video_path = download_video(VIDEO_NAME)
+        
+        # 1. Optimized Pipeline
         seed = find_best_seed(video_path)
-        processed_path = process_and_encode(video_path, seed)
-        upload_video(processed_path, VIDEO_NAME)
-        print("Processing completed successfully")
+        opt_path, opt_time = process_and_encode(video_path, seed)
+        opt_size = os.path.getsize(opt_path)
+        upload_video(opt_path, f"optimized/{VIDEO_NAME}")
+        
+        # 2. Standard Pipeline
+        std_path, std_time = standard_encode(video_path)
+        std_size = os.path.getsize(std_path)
+        upload_video(std_path, f"standard/{VIDEO_NAME}")
+        
+        # 3. Comparison Report
+        report = (
+            f"Video: {VIDEO_NAME}\n"
+            f"--- Optimized Pipeline ---\n"
+            f"Time: {opt_time:.2f}s\n"
+            f"Size: {opt_size / 1024 / 1024:.2f} MB\n"
+            f"Seed: {seed}\n\n"
+            f"--- Standard Pipeline ---\n"
+            f"Time: {std_time:.2f}s\n"
+            f"Size: {std_size / 1024 / 1024:.2f} MB\n"
+        )
+        report_path = f"/tmp/report_{VIDEO_NAME}.txt"
+        with open(report_path, 'w') as f:
+            f.write(report)
+        s3.upload_file(report_path, R2_BUCKET, f"reports/{VIDEO_NAME}.txt")
+        
+        print("Benchmark completed successfully")
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
