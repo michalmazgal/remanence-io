@@ -11,9 +11,11 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --no-cache-dir -r /app/worker/requirements.txt boto3
-
 WORKDIR /app
-COPY worker/ /app/worker/
+
+COPY worker/requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt boto3 cupy-cuda12x opencv-python-headless
+
+COPY worker/ ./worker/
 
 CMD ["python3", "/app/worker/worker_entrypoint.py"]
