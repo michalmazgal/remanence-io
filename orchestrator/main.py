@@ -81,6 +81,17 @@ def orchestrate_video(video_name):
     
     offers.sort() # Sort by price ascending
             
+    # Try to find a GPU that has a matching image from the sorted list
+    selected_offer = None
+    selected_image = None
+    
+    for price, offer_id, gpu_name in offers:
+        image = get_image_for_gpu(gpu_name)
+        if image:
+            selected_offer = offer_id
+            selected_image = image
+            break
+            
     if not selected_offer:
         print("No GPUs available with a corresponding Docker image")
         return False
