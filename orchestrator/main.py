@@ -7,7 +7,7 @@ import json
 import signal
 
 # Configuration
-DEFAULT_TEMPLATE_HASH = 'eb2ab4cbd19599ce6d0af2df73423dc9'
+DEFAULT_TEMPLATE_HASH = 'bb257d63ed307763cce098a6bf97f42a'
 
 def load_secrets():
     secrets = {}
@@ -55,16 +55,17 @@ def run_command(cmd):
 
 def get_template_for_gpu(gpu_name):
     gpu_map = {
-        'RTX_A6000': 'eb2ab4cbd19599ce6d0af2df73423dc9',
-        'A100': 'eb2ab4cbd19599ce6d0af2df73423dc9',
-        'H100': 'a74d9e369719273bca0ae861093e4d0c',
-        'RTX_3090': 'eb2ab4cbd19599ce6d0af2df73423dc9', # Fallback
-        'RTX_4090': 'eb2ab4cbd19599ce6d0af2df73423dc9'  # Fallback
+        'RTX_A6000': 'bb257d63ed307763cce098a6bf97f42a',
+        'A100': 'bb257d63ed307763cce098a6bf97f42a',
+        'H100': 'bb257d63ed307763cce098a6bf97f42a',
+        'RTX_3090': 'bb257d63ed307763cce098a6bf97f42a', # Fallback
+        'RTX_4090': 'bb257d63ed307763cce098a6bf97f42a'  # Fallback
     }
     for key, thash in gpu_map.items():
         if key in gpu_name:
             return thash
     return None
+
 
 def orchestrate_video(video_name):
     global current_instance_id
