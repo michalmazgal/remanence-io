@@ -38,9 +38,10 @@ def get_image_for_gpu(gpu_name):
     gpu_map = {
         'RTX_A6000': 'ada6000',
         'A100': 'a100',
-        'H100': 'h100'
+        'H100': 'h100',
+        'RTX_3090': 'ada6000', # Fallback for testing
+        'RTX_4090': 'ada6000'  # Fallback for testing
     }
-    # Find a match in the map
     for key, tag in gpu_map.items():
         if key in gpu_name:
             return f"ghcr.io/{os.getenv('GH_USER')}/remanence-worker-{tag}:latest"
@@ -49,17 +50,15 @@ def get_image_for_gpu(gpu_name):
 def orchestrate_video(video_name):
     print(f"Starting orchestration for {video_name}")
     
-    # 1. Find an ECC GPU (A6000, A100, H100)
-    # Search for compatible GPUs, sort by price
+    # 1. Find a high-end GPU (Expanding for immediate test)
+    # Removed sort_by and limit as they are not supported by this CLI version
     search_cmd = [
         'vastai', 'search', 'offers', 
-        'gpu_name=RTX_A6000,A100,H100', 
-        'sort_by=price', 
-        'limit=5'
+        'gpu_name=RTX_A6000,A100,H100,RTX_3090,RTX_4090'
     ]
     search_res = run_command(search_cmd)
     if search_res.returncode != 0 or not search_res.stdout:
-        print("No compatible ECC GPUs available")
+        print("No suitable GPUs available")
         return False
     
     lines = search_res.stdout.strip().split('\n')
@@ -67,21 +66,20 @@ def orchestrate_video(video_name):
         print("Could not find offers")
         return False
 
-    # Try to find a GPU that has a matching image
-    selected_offer = None
-    selected_image = None
-    
+    # We'll handle sorting by price in Python
+    offers = []
     for line in lines[1:]:
         parts = line.split()
         if not parts: continue
-        offer_id = parts[0]
-        gpu_name = parts[2] if len(parts) > 2 else ""
-        
-        image = get_image_for_gpu(gpu_name)
-        if image:
-            selected_offer = offer_id
-            selected_image = image
-            break
+        try:
+            offer_id = parts[0]
+            gpu_name = parts[4] if len(parts) > 4 else "" # Adjusted index for the actual CLI output
+            price = float(parts[9]) if len(parts) > 9 else float('inf')
+            offers.append((price, offer_id, gpu_name))
+        except (ValueError, IndexError):
+            continue
+    
+    offers.sort() # Sort by price ascending
             
     if not selected_offer:
         print("No GPUs available with a corresponding Docker image")
@@ -103,12 +101,10 @@ def orchestrate_video(video_name):
     
     try:
         while True:
-            # Check if the report exists in R2
             response = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix=f'reports/{video_name}.txt')
             if 'Contents' in response:
                 print(f"Benchmark report for {video_name} is ready")
                 break
-            
             print("Still processing benchmark...")
             time.sleep(60)
     finally:
